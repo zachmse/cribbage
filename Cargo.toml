@@ -11,4 +11,5 @@ publish = false
 
 [dependencies]
 cribbage-core = "0.1.5"
+rand = "0.8.4"
 rocket = "0.5.0-rc.1"
