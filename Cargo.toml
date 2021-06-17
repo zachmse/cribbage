@@ -1,0 +1,14 @@
+[package]
+name = "cribbage"
+version = "0.1.5"
+authors = ["Zach Miller <25236373+zachmse@users.noreply.github.com>"]
+edition = "2018"
+description = "A (work-in-progress) implementation of the game Cribbage."
+repository = "https://github.com/zachmse/cribbage"
+readme = "README.md"
+license = "MIT"
+publish = false
+
+[dependencies]
+cribbage-core = "0.1.5"
+rocket = "0.5.0-rc.1"
