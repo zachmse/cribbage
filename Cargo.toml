@@ -11,5 +11,8 @@ publish = false
 
 [dependencies]
 cribbage-core = "0.1.5"
+futures = "0.3.15"
 rand = "0.8.4"
-rocket = "0.5.0-rc.1"
+tokio = { version = "1.7.0", features = ["full"] }
+tokio-stream = "0.1.6"
+warp = "0.3.1"

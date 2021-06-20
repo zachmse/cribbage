@@ -1,68 +1,106 @@
-mod routes;
-mod state;
+mod matchmaker;
 
-use state::GameState;
+use matchmaker::{start_matchmaker, Command};
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::convert::Infallible;
 
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
-use rocket::{launch, routes};
+use tokio::spawn;
+use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::oneshot;
+use warp::ws::WebSocket;
+use warp::Filter;
+use warp::Reply;
 
-#[derive(Clone, Default)]
-pub struct GameReference {
-    game_state: Arc<Mutex<GameState>>,
-}
+static INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Warp Chat</title>
+    </head>
+    <body>
+        <h1>Warp chat</h1>
+        <div id="chat">
+            <p><em>Connecting...</em></p>
+        </div>
+        <input type="text" id="text" />
+        <button type="button" id="join">Join</button>
+        <button type="button" id="send" style="display: none;">Send</button>
+        <script type="text/javascript">
+        const chat = document.getElementById('chat');
+        const text = document.getElementById('text');
+        var ws;
 
-impl GameReference {
-    pub fn new() -> Self {
-        Self {
-            game_state: Arc::new(Mutex::new(GameState::NewGame)),
+        function message(data) {
+            const line = document.createElement('p');
+            line.innerText = data;
+            chat.appendChild(line);
         }
-    }
+
+        join.onclick = function() {
+            ws = new WebSocket('ws://' + location.host + '/join' + '/' + text.value);
+            ws.onopen = function() {
+                join.style = "display: none;";
+                send.style = "";
+                text.value = "";
+                chat.innerHTML = '<p><em>Connected!</em></p>';
+            };
+
+            ws.onmessage = function(msg) {
+                message('<Them>: ' + msg.data);
+            };
+
+            ws.onclose = function() {
+                chat.getElementsByTagName('em')[0].innerText = 'Disconnected!';
+            };
+        };
+
+        send.onclick = function() {
+            const msg = text.value;
+            ws.send(msg);
+            text.value = '';
+            message('<You>: ' + msg);
+        };
+        </script>
+    </body>
+</html>
+"#;
+
+async fn create_game(tx: Sender<Command>) -> Result<impl Reply, Infallible> {
+    let (resp_tx, resp_rx) = oneshot::channel();
+    let cmd = Command::CreateRoom { responder: resp_tx };
+
+    let _ = tx.send(cmd).await;
+    Ok(resp_rx.await.unwrap().unwrap())
 }
 
-#[derive(Default)]
-pub struct Games {
-    map: RwLock<HashMap<String, GameReference>>,
+async fn join_game(tx: Sender<Command>, password: String, websocket: WebSocket) {
+    let (resp_tx, resp_rx) = oneshot::channel();
+    let cmd = Command::JoinRoom {
+        password,
+        websocket,
+        responder: resp_tx,
+    };
+
+    let _ = tx.send(cmd).await;
+    let _ = resp_rx.await.unwrap();
 }
 
-impl Games {
-    pub fn new() -> Self {
-        Self {
-            map: RwLock::new(HashMap::new()),
-        }
-    }
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = mpsc::channel(32);
+    let tx2 = tx.clone();
+    let _matchmaker = spawn(start_matchmaker(rx));
 
-    pub fn get(&self, identifier: &str) -> Option<GameReference> {
-        let lock = self.map.read().unwrap();
-        lock.get(identifier).cloned()
-    }
+    let create = warp::path("create").and_then(move || create_game(tx.clone()));
 
-    pub fn add(&self) -> String {
-        let identifier: String = thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(8)
-            .map(char::from)
-            .collect();
+    let join = warp::path("join")
+        .and(warp::path::param::<String>())
+        .and(warp::ws())
+        .map(move |password: String, ws: warp::ws::Ws| {
+            let tx3 = tx2.clone();
+            ws.on_upgrade(move |websocket| join_game(tx3, password, websocket))
+        });
 
-        let cloned_identifier = identifier.clone();
-        let game_reference = GameReference::new();
-        let mut games = self.map.write().unwrap();
-        games.insert(identifier, game_reference);
-        cloned_identifier
-    }
-
-    pub fn count(&self) -> usize {
-        let games = self.map.read().unwrap();
-        games.len()
-    }
-}
-
-#[launch]
-fn server() -> _ {
-    rocket::build()
-        .manage(Games::new())
-        .mount("/game", routes![routes::create, routes::count])
+    let index = warp::path::end().map(|| warp::reply::html(INDEX_HTML));
+    let routes = index.or(create).or(join);
+    warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
 }
